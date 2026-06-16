@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BTY 主体抠图调试</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; background: #faf7f2; color: #2b211c; }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { color: #6c5b52; line-height: 1.5; }
+    .panel { background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,.06); margin-top: 20px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .preview, .result { min-height: 320px; border: 1px solid #ece5dc; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: linear-gradient(45deg, #f4efe8 25%, #fff 25%, #fff 50%, #f4efe8 50%, #f4efe8 75%, #fff 75%, #fff 100%); background-size: 20px 20px; overflow: hidden; }
+    img { max-width: 100%; max-height: 320px; }
+    button { border: none; border-radius: 12px; background: #2b211c; color: #fff; padding: 12px 18px; font-size: 15px; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: default; }
+    .candidates { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-top: 20px; }
+    .card { background: #fff; border: 2px solid transparent; border-radius: 14px; padding: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.05); }
+    .card.active { border-color: #2b211c; }
+    .card img { width: 100%; height: 180px; object-fit: contain; display: block; background: linear-gradient(45deg, #f4efe8 25%, #fff 25%, #fff 50%, #f4efe8 50%, #f4efe8 75%, #fff 75%, #fff 100%); background-size: 20px 20px; }
+    .meta { margin-top: 8px; font-size: 13px; color: #6c5b52; }
+    .status { margin-top: 12px; font-size: 14px; color: #6c5b52; }
+    input[type=file] { display: block; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>BTY 主体抠图调试页</h1>
+    <p>上传一张图片，服务会尝试只保留主体，并生成透明背景 PNG。当前版本用 OpenCV GrabCut 做第一版调试，重点是先看效果，不是最终模型质量。</p>
+
+    <div class="panel">
+      <input id="fileInput" type="file" accept="image/*" />
+      <button id="runBtn">上传并处理</button>
+      <div class="status" id="status">等待上传</div>
+    </div>
+
+    <div class="panel row">
+      <div>
+        <h3>原图</h3>
+        <div class="preview"><img id="originalPreview" /></div>
+      </div>
+      <div>
+        <h3>当前选中的透明主体</h3>
+        <div class="result"><img id="selectedPreview" /></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>候选主体</h3>
+      <div class="candidates" id="candidates"></div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const runBtn = document.getElementById('runBtn');
+    const statusEl = document.getElementById('status');
+    const originalPreview = document.getElementById('originalPreview');
+    const selectedPreview = document.getElementById('selectedPreview');
+    const candidatesEl = document.getElementById('candidates');
+
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function pollTask(taskId) {
+      while (true) {
+        const response = await fetch(`/api/cutout/tasks/${taskId}`);
+        const data = await response.json();
+        statusEl.textContent = `任务状态：${data.status}`;
+        if (data.status === 'succeeded' || data.status === 'failed') return data;
+        await sleep(1200);
+      }
+    }
+
+    function renderCandidates(items) {
+      candidatesEl.innerHTML = '';
+      if (!items.length) return;
+      selectedPreview.src = items[0].cutoutUrl;
+      items.forEach((item, index) => {
+        const card = document.createElement('div');
+        card.className = `card ${index === 0 ? 'active' : ''}`;
+        card.innerHTML = `
+          <img src="${item.cutoutUrl}" alt="${item.displayName}" />
+          <div class="meta">${item.displayName}</div>
+          <div class="meta">面积占比 ${Math.round(item.areaRatio * 100)}%</div>
+        `;
+        card.onclick = () => {
+          document.querySelectorAll('.card').forEach(node => node.classList.remove('active'));
+          card.classList.add('active');
+          selectedPreview.src = item.cutoutUrl;
+        };
+        candidatesEl.appendChild(card);
+      });
+    }
+
+    runBtn.onclick = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      runBtn.disabled = true;
+      candidatesEl.innerHTML = '';
+      selectedPreview.removeAttribute('src');
+      originalPreview.src = URL.createObjectURL(file);
+      statusEl.textContent = '正在创建上传地址';
+
+      try {
+        const tokenRes = await fetch('/api/media/upload-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bizType: 'food-diary-cutout',
+            fileName: file.name,
+            contentType: file.type || 'image/jpeg'
+          })
+        });
+        const token = await tokenRes.json();
+
+        statusEl.textContent = '正在上传原图';
+        const form = new FormData();
+        form.append(token.fileFieldName || 'file', file);
+        await fetch(token.uploadUrl, { method: 'POST', body: form });
+
+        statusEl.textContent = '正在创建抠图任务';
+        const taskRes = await fetch('/api/cutout/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scene: 'food-diary-cutout',
+            imageId: token.imageId,
+            imageUrl: token.fileUrl
+          })
+        });
+        const task = await taskRes.json();
+        const result = await pollTask(task.taskId);
+
+        if (result.status !== 'succeeded') {
+          statusEl.textContent = `处理失败：${result.failReason || 'unknown error'}`;
+          return;
+        }
+
+        statusEl.textContent = '处理完成';
+        renderCandidates(result.items || []);
+      } catch (error) {
+        statusEl.textContent = `请求失败：${error.message}`;
+      } finally {
+        runBtn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
