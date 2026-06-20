@@ -1,6 +1,13 @@
 fastapi==0.115.0
 uvicorn==0.30.6
+gunicorn>=21.0.0
 pillow==10.4.0
 numpy==2.1.1
 opencv-python-headless==4.10.0.84
 python-multipart==0.0.9
+# BiRefNet / IS-Net / U2-Net (通过 rembg)
+rembg[gpu]>=2.0.50
+onnxruntime>=1.16.0
+# RMBG-1.4 (BRIA 商业级模型)
+torch>=2.0.0
+transformers>=4.36.0
