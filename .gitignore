@@ -7,3 +7,4 @@ storage/tasks/*
 !storage/originals/.gitkeep
 !storage/output/.gitkeep
 !storage/tasks/.gitkeep
+.DS_Store
